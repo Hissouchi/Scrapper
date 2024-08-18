@@ -9,15 +9,16 @@ class getAllHTMLTags(HTMLParser):
 
 def main():
     urls = {"https://stackoverflow.com/questions?tab=newest&pagesize=50",
-        "https://stackoverflow.com/questions?tab=newest&page=2",
-        "https://stackoverflow.com/questions?tab=newest&page=3",
-        "https://stackoverflow.com/questions?tab=newest&page=4",
-        "https://stackoverflow.com/questions?tab=newest&page=5",
-        "https://stackoverflow.com/questions?tab=newest&page=6",
-        "https://stackoverflow.com/questions?tab=newest&page=7",
-        "https://stackoverflow.com/questions?tab=newest&page=8",
-        "https://stackoverflow.com/questions?tab=newest&page=9",
-        "https://stackoverflow.com/questions?tab=newest&page=10"}
+            "https://stackoverflow.com/questions?tab=newest&page=2",
+            "https://stackoverflow.com/questions?tab=newest&page=3",
+            "https://stackoverflow.com/questions?tab=newest&page=4",
+            "https://stackoverflow.com/questions?tab=newest&page=5",
+            "https://stackoverflow.com/questions?tab=newest&page=6",
+            "https://stackoverflow.com/questions?tab=newest&page=7",
+            "https://stackoverflow.com/questions?tab=newest&page=8",
+            "https://stackoverflow.com/questions?tab=newest&page=9",
+            "https://stackoverflow.com/questions?tab=newest&page=10"
+}
         
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
@@ -57,15 +58,16 @@ def main():
                     x.decompose()
                 
                 content = soup.get_text(separator=' ', strip=True).lower()
-                # elements = soup.find_all(class_="s-post-summary")
-                # titles = [e.find_next("a") for e in elements]
-            
+      
                 words = content.split(" ")
-                words = {w.strip("?'[],/:;!@|") for w in words}
+                # words = {w.strip("?'[],/:;!@|.") for w in words}
+                # print(words)
                 
                 for k in Keywords :
-                    if k in words : 
-                        Keywords[k] += 1
+                    for w in words :  
+                        if k == w : 
+                            Keywords[k] += 1
+                    
         print(Keywords)
             
         plt.bar(Keywords.keys(), Keywords.values())
