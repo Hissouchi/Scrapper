@@ -29,7 +29,7 @@ def main():
         "css" : 0 , 
         "javascript" : 0 , 
         "java" : 0 , 
-        "spring" : 0, 
+        "spring" : 0 , 
         "wordpress" : 0 , 
         "cms" : 0 , 
         "prestashop" : 0 , 
@@ -39,11 +39,17 @@ def main():
         "c++" : 0 , 
         "angular" : 0 , 
         "nodejs" : 0 , 
+        "node" : 0 ,
         "lavarel" : 0 , 
         "php" : 0 , 
         ".net" : 0 , 
-        "c" : 0, 
-        "joomla" : 0 
+        "c" : 0 , 
+        "joomla" : 0 ,
+        "python" : 0 ,
+        "flask" : 0 ,
+        "django" : 0 ,
+        "fastapi" : 0 ,
+        "openapi" : 0
         }
     
     
