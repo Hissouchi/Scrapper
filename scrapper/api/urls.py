@@ -1,6 +1,6 @@
 from django.urls import path
-from .views import Sprapper
+from .views import Scrapper
 
 urlpatterns = [
-    path('scrapper/', Sprapper.as_view(), name='scrapper'),
+    path('scrapper/', Scrapper.as_view(), name='scrapper'),
 ]
