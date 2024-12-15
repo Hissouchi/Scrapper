@@ -3,6 +3,8 @@ from bs4 import BeautifulSoup
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 import re
 
 class Scrapper(APIView):
@@ -12,18 +14,40 @@ class Scrapper(APIView):
     
     def fetch_sitemap_urls(self, website_url):
         try:
-            robots_url = f"{website_url}/robots.txt"
-            print(robots_url)
+            
+            parsed_url = urlparse(website_url)
+            origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            robots_url = f"{origin}/robots.txt"
             response = requests.get(robots_url, headers=self.headers)
-            sitemap_urls = []
+            sitemap_urls = set()
+            urls =[]
             if response.status_code == 200:
                 for line in response.text.split("\n"):
-                    if line.startswith("Sitemap:"):
-                        sitemap_url = line.split(":")[1].strip()
-                        sitemap_urls.append(sitemap_url)
-            return sitemap_urls
+                    line = line.strip()
+                    if line.lower().startswith("sitemap:") :
+                        sitemap_url = line.split(" ")[1].strip()
+                        sitemap_urls.add(sitemap_url)
+                    elif line.startswith("http") :
+                        sitemap_urls.add(line)
+            if not sitemap_urls : 
+                robots_url = f"{origin}/sitemap_index.xml" 
+                response = requests.get(robots_url, headers=self.headers)
+                if response.status_code == 200 :
+                    sitemap_urls.add(robots_url)
+            for sitemap_url in sitemap_urls:
+                response_url = requests.get(sitemap_url,headers=self.headers)
+                if response_url.status_code == 200:
+                    try:
+                        root =  ET.fromstring(response_url.content)
+                        for elem in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
+                            urls.append(elem.text)
+                            
+                    except ET.ParseError:
+                        print(f"Échec de parsing XML pour le sitemap: {sitemap_url}")
+                        return []
+            return urls
         except Exception as e:
-            print(f"Failed to fetch sitemap URLs: {e}")
+            print(f"Échec de la récupération des URLs du site: {e}")
             return []
 
     def get_pagination_links(self, url):
@@ -33,15 +57,12 @@ class Scrapper(APIView):
             if re.search(r'(page=|/page/)', url):
                 for i in range(1, 51):  # Limit to 50 pages maximum
                     paginated_url = re.sub(r'(page=|/page/)(\d+)', rf'\g<1>{i}', url)
-                    print(paginated_url)
                     paginated_urls.append(paginated_url)
             else :
-                paginated_urls.append(url) 
-                print(paginated_urls)
-                
+                paginated_urls.append(url)                 
             return paginated_urls
         except Exception as e:
-            print(f"Failed to detect pagination: {e}")
+            print(f"Echec de détection de la paginantion : {e}")
             return []
 
     def extract_content(self, url, content_types):
@@ -65,7 +86,7 @@ class Scrapper(APIView):
                         datas_extracted.append([str(table) for table in soup.find_all('table')])
             return datas_extracted
         except Exception as e:
-            print(f"Failed to extract content from {url}: {e}")
+            print(f"Echec d'extraction des données depuis {url}: {e}")
             return []
 
     def post(self, request):
