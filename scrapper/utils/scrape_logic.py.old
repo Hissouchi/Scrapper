@@ -1,0 +1,204 @@
+# fichier : utils/scrape_logic.py
+
+import requests
+from bs4 import BeautifulSoup
+import time
+import random
+import re
+from urllib.parse import urlparse
+from datetime import datetime
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'fr,fr-FR;q=0.8,en-US;q=0.5,en;q=0.3',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'cross-site',
+    'Priority': 'u=4',
+    'Pragma': 'no-cache',
+    'Cache-Control': 'no-cache',
+}
+
+def fetch_proxies():
+    proxy_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text"
+    response = requests.get(proxy_url)
+    if response.status_code == 200:
+        proxies = response.text.split('\n')
+        return [proxy.strip() for proxy in proxies if proxy.strip()]
+    else:
+        print("Failed to fetch proxies")
+        return []
+
+def get_random_proxy(proxies):
+    if not proxies:
+        proxies = fetch_proxies()
+    if not proxies:
+        return None
+    proxy = random.choice(proxies)
+    return {'http': proxy, 'https': proxy}
+
+def make_request_with_retries(url, headers, proxies=None, retries=2, delay=5):
+    for _ in range(retries):
+        proxy = get_random_proxy(proxies)
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            print(response.status_code)
+            print(response.text[:500])
+            if response.status_code == 200:
+                return response
+            elif response.status_code == 403:
+                print(f"403 Forbidden for {url}, retrying in {delay} seconds...")
+                time.sleep(delay)
+        except Exception as e:
+            print(f"Request error: {e}")
+            time.sleep(delay)
+    return None
+
+def get_pagination_links(url):
+    paginated_urls = []
+    for i in range(1, 6):
+        paginated_urls.append(f"{url}?page:{i}")
+    return paginated_urls
+
+def parse_features(features_raw_list):
+    mapping = {
+        "Ascenseur": ("ascenseur", True),
+        "Balcon": ("balcon", True),
+        "Parking": ("parking", True),
+        "Climatisation": ("climatisation", "centralisée"),
+        "Chauffage": ("chauffage", "central"),
+        "Jardin": ("jardin", True),
+        "Meublé": ("meuble", True),
+        "Piscine": ("piscine", True),
+        "Sécurité": ("sécurité", ["gardien"]), 
+        "Étage": ("étage", 1) 
+    }
+
+    features_cleaned = {}
+    for item in features_raw_list:
+        item = item.strip().capitalize()
+        if item in mapping:
+            key, value = mapping[item]
+            features_cleaned[key] = value
+    return features_cleaned
+
+def parse_contact(contact_info):
+    mapping={
+        "Name": ("name", True),
+        "Phone": ("phone", True),
+        "Email": ("email", False)
+    }
+    
+    contact_cleaned = {}
+    for i in contact_info:
+        i = i.strip().capitalize()
+        if i in mapping:
+            key, value = mapping[i]
+            contact_cleaned[key] = value
+    return contact_cleaned
+
+def extract_mubawab_data(url):
+    print(f"[INFO] Accès à la page : {url}")
+    response = make_request_with_retries(url, headers)
+    if not response or response.status_code != 200:
+        print("[WARN] Aucune réponse reçue")
+        return []
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+    boxes = soup.select("div.listingBox")
+    print(f"[INFO] {len(boxes)} annonces trouvées sur la page")
+    
+    annonces = []
+
+    for box in boxes:
+        try:
+            title_tag = box.select_one("h2.listingTit a")
+            title = title_tag.get_text(strip=True) if title_tag else "Sans titre"
+            
+            price_tag = box.select_one("span.priceTag")
+            price = int(re.sub(r"[^\d]", "", price_tag.text)) if price_tag else None
+
+            link = box.get("linkref") or (title_tag['href'] if title_tag else "")
+            full_url = link if link.startswith("http") else "https://www.mubawab.ma" + link
+            source_id = re.findall(r'/a/(\d+)', full_url)
+            source_id = source_id[0] if source_id else ""
+
+            details = box.select("div.adDetailFeature span")
+            surface = rooms = bedrooms = bathrooms = None
+            for d in details:
+                text = d.get_text(strip=True)
+                if "m²" in text:
+                    surface = int(re.search(r'\d+', text).group())
+                elif "Pièces" in text:
+                    rooms = int(re.search(r'\d+', text).group())
+                elif "Chambres" in text:
+                    bedrooms = int(re.search(r'\d+', text).group())
+                elif "Salle de bain" in text:
+                    bathrooms = int(re.search(r'\d+', text).group())
+
+            features_list = [feat.get_text(strip=True) for feat in box.select("div.adFeature span")]
+            features = parse_features(features_list)
+
+            img_tag = box.select_one("img.sliderImage")
+            image_url = img_tag.get("src") if img_tag else None
+            
+            Phonenumb = [feat.get_text(strip=True) for feat in box.select("div.adFeature span")]
+
+            annonces.append({
+                "title": title,
+                "property_type": "appartement",
+                "city": "Inconnue",
+                "district": "",
+                "region": "",
+                "address": "",
+                "surface_area": surface,
+                "rooms_count": rooms,
+                "bedrooms_count": bedrooms,
+                "bathrooms_count": bathrooms,
+                "price": price,
+                "description": "",
+                "features": features, 
+                "images_urls": [image_url] if image_url else [],
+                "publication_date": datetime.now().date().isoformat(),
+                "source": "Mubawab",
+                "source_id": source_id,
+                "url_source": full_url,
+                "contact_info": {
+                    "name": "Mubawab",
+                    "email": "",
+                    "phone": ""
+                },
+                "is_available": True,
+                "is_featured": "feat" in box.get("class", []),
+                "latitude": None,
+                "longitude": None
+            })
+            
+        except Exception as e:
+            print(f"Erreur parsing annonce: {e}")
+            
+            
+
+    return annonces
+
+def run_scraper(since_date):
+    urls = [
+        "https://www.mubawab.ma/fr/sc/appartements-a-vendre"
+    ]
+    data_collected = []
+
+    for url in urls:
+        for p_url in get_pagination_links(url):
+            annonces = extract_mubawab_data(p_url)
+            for annonce in annonces:
+                try:
+                    date_obj = datetime.fromisoformat(annonce["publication_date"]).date()
+                    if date_obj >= since_date:
+                        data_collected.append(annonce)
+                except Exception as e:
+                    print(f"Erreur sur la date: {e}")
+
+    return data_collected

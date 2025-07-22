@@ -6,53 +6,139 @@ from rest_framework import status
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 import re
+import time
+import random
 
 class Scrapper(APIView):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'fr,fr-FR;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'cross-site',
+        'Priority': 'u=4',
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache',
     }
     
+    def fetch_proxies(self):
+        proxy_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text"
+        response = requests.get(proxy_url)
+        if response.status_code == 200:
+            proxies = response.text.split('\n')
+            return [proxy.strip() for proxy in proxies if proxy.strip()]
+        else:
+            print("Failed to fetch proxies")
+            return []
+        
+    def get_random_proxy(self):
+        if not hasattr(self, 'proxies') or not self.proxies:
+            self.proxies = self.fetch_proxies()
+        if not self.proxies:
+            return None
+        proxy = random.choice(self.proxies)
+        if proxy.startswith('http://') or proxy.startswith('https://'):
+            return {
+                'http': proxy,
+                'https': proxy,
+            }
+        elif proxy.startswith('socks4://'):
+            return {
+                'http': proxy,
+                'https': proxy,
+            }
+        else:
+            return None
+
     def fetch_sitemap_urls(self, website_url):
         try:
-            
+            self.proxies = self.fetch_proxies()
             parsed_url = urlparse(website_url)
             origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
             robots_url = f"{origin}/robots.txt"
-            response = requests.get(robots_url, headers=self.headers)
+            # response = requests.get(robots_url, headers=self.headers, proxies=self.get_random_proxy())
             sitemap_urls = set()
             urls =[]
-            if response.status_code == 200:
-                for line in response.text.split("\n"):
-                    line = line.strip()
-                    if line.lower().startswith("sitemap:") :
-                        sitemap_url = line.split(" ")[1].strip()
-                        sitemap_urls.add(sitemap_url)
-                    elif line.startswith("http") :
-                        sitemap_urls.add(line)
-            if not sitemap_urls : 
-                robots_url = f"{origin}/sitemap_index.xml" 
-                response = requests.get(robots_url, headers=self.headers)
+            
+            fallback_sitemaps = [
+                    f"{origin}/sitemap_index.xml",
+                    f"{origin}/sitemap.xml",
+                    f"{origin}/post-sitemap.xml",
+                    f"{origin}/author-sitemap.xml",
+                    f"{origin}/category-sitemap.xml",
+                    f"{origin}/page-sitemap.xml",
+                    f"{origin}/post-sitemap.xml",
+                    f"{origin}/post_tag-sitemap.xml"
+                ]      
+            
+            # if response.status_code == 200:
+            #     for line in response.text.split("\n"):
+            #         line = line.strip()
+            #         if line.lower().startswith("sitemap:") :
+            #             sitemap_url = line.split(" ")[1].strip()
+            #             sitemap_urls.add(sitemap_url)
+            #         elif line.startswith("http") :
+            #             sitemap_urls.add(line)
+                
+                
+            for fallback_sitemap in fallback_sitemaps :
+                response = self.make_request_with_retries(fallback_sitemap)
+                print(f"Testing {fallback_sitemap}: {response.status_code}")
                 if response.status_code == 200 :
-                    sitemap_urls.add(robots_url)
-            for sitemap_url in sitemap_urls:
-                response_url = requests.get(sitemap_url,headers=self.headers)
-                if response_url.status_code == 200:
                     try:
-                        root =  ET.fromstring(response_url.content)
-                        for elem in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
-                            urls.append(elem.text)
-                            
+                        root = ET.fromstring(response.content)
+                        sitemap_urls.add(fallback_sitemap)
                     except ET.ParseError:
-                        print(f"Échec de parsing XML pour le sitemap: {sitemap_url}")
-                        return []
+                        print("Contenu non-XML détecté.")
+                        
+            for sitemap_url in sitemap_urls:
+                response_url = self.make_request_with_retries(sitemap_url)
+                if response_url.status_code == 200:
+                    content_type = response_url.headers.get('Content-Type', '')
+                    if 'xml' in content_type :
+                        try:
+                            root =  ET.fromstring(response_url.content)
+                            loc_elements = root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+                            for elem in loc_elements:
+                                urls.append(elem.text)
+                                
+                        except ET.ParseError:
+                            print(f"Échec de parsing XML pour le sitemap: {sitemap_url}")
+                    elif 'html' in content_type :
+                        soup = BeautifulSoup(response_url.content, 'html.parser')
+                        sitemap_table = soup.find('table',{'id' : 'sitemap'})
+                        if sitemap_table : 
+                            for link in sitemap_table.find_all('a', href=True) :
+                                urls.append(link['href'])
+
             return urls
         except Exception as e:
             print(f"Échec de la récupération des URLs du site: {e}")
             return []
 
+    def make_request_with_retries(self, url, retries=2, delay=5):
+        for i in range(retries):
+            proxy = self.get_random_proxy()
+            if proxy:
+                try:
+                    response = requests.get(url, headers=self.headers, proxies=proxy, timeout=10)
+                except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout) as e:
+                    print(f"Proxy error: {e}")
+                    continue
+            else:
+                response = requests.get(url, headers=self.headers, proxies=self.get_random_proxy())
+            if response.status_code == 200:
+                return response
+            elif response.status_code == 403:
+                print(f"403 Forbidden for {url}, retrying in {delay} seconds...")
+                time.sleep(delay)
+        return response
+    
     def get_pagination_links(self, url):
         try:
-            # Check common pagination patterns and limit to a maximum of 50 pages
             paginated_urls = []
             if re.search(r'(page=|/page/)', url):
                 for i in range(1, 51):  # Limit to 50 pages maximum
@@ -65,12 +151,20 @@ class Scrapper(APIView):
             print(f"Echec de détection de la paginantion : {e}")
             return []
 
-    def extract_content(self, url, content_types):
+    def extract_content(self, url, content_types) :
         try:
-            response = requests.get(url, headers=self.headers)
+            datas_extracted = []
+            proxy = self.get_random_proxy()
+            if proxy:
+                try:
+                    response = requests.get(url, headers=self.headers, proxies=proxy, timeout=10)
+                except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout) as e:
+                    print(f"Proxy error: {e}")
+                    return []
+            else:
+                response = requests.get(url, headers=self.headers)
             if response.status_code == 200 :
                 soup = BeautifulSoup(response.text, 'html.parser')
-                datas_extracted = []
                 for content_type in content_types :
                     if content_type == "titles":
                         datas_extracted.extend(["titles",url])
@@ -88,7 +182,7 @@ class Scrapper(APIView):
         except Exception as e:
             print(f"Echec d'extraction des données depuis {url}: {e}")
             return []
-
+        
     def post(self, request):
         urls = request.data.get("urls", [])
         content_type = request.data.get("content_type")
@@ -96,7 +190,6 @@ class Scrapper(APIView):
         
         extracted_data = []
         try:
-            #print('Is_full'+len(urls))
             if is_full_website and len(urls) == 1:
                 website_url = urls[0]
                 sitemap_urls = self.fetch_sitemap_urls(website_url)
