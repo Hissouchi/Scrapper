@@ -3,7 +3,9 @@
 import re
 import time
 from datetime import datetime
+import requests
 from urllib.parse import urlparse
+from decimal import Decimal
 
 from playwright.sync_api import sync_playwright
 
@@ -13,41 +15,79 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 PAGINATION_MAX = 1  # Nombre de pages à scrapper
 
-def parse_detail_features(feature_elements):
+def parse_detail_features(detail_page):
     features = {}
+    try:
+        ad_features_blocks = detail_page.query_selector_all(".adFeatures")
+        if len(ad_features_blocks) > 1:
+            ad_feature_elements = ad_features_blocks[1].query_selector_all(".adFeature span")
+            for el in ad_feature_elements:
+                text = el.inner_text().strip().lower()
 
-    for el in feature_elements:
-        text = el.inner_text().strip().lower()
-
-        if "ascenseur" in text:
-            features["ascenseur"] = True
-        elif "balcon" in text:
-            features["balcon"] = True
-        elif "parking" in text or "garage" in text:
-            features["parking"] = True
-        elif "climatisation" in text:
-            features["climatisation"] = "centralisée"
-        elif "chauffage" in text:
-            features["chauffage"] = "central"
-        elif "jardin" in text:
-            features["jardin"] = True
-        elif "meublé" in text or "meuble" in text:
-            features["meuble"] = True
-        elif "piscine" in text:
-            features["piscine"] = True
-        elif "sécurité" in text or "gardien" in text or "concierge" in text:
-            if "sécurité" not in features:
-                features["sécurité"] = []
-            if "gardien" in text or "concierge" in text:
-                features["sécurité"].append("gardien")
-            else:
-                features["sécurité"].append(text)
-        elif "étage" in text:
-            match = re.search(r'\d+', text)
-            if match:
-                features["étage"] = int(match.group())
-    
+                if "ascenseur" in text:
+                    features["ascenseur"] = True
+                elif "balcon" in text:
+                    features["balcon"] = True
+                elif "parking" in text or "garage" in text:
+                    features["parking"] = True
+                elif "climatisation" in text:
+                    features["climatisation"] = "centralisée"
+                elif "chauffage" in text:
+                    features["chauffage"] = "central"
+                elif "jardin" in text:
+                    features["jardin"] = True
+                elif "meublé" in text or "meuble" in text:
+                    features["meuble"] = True
+                elif "piscine" in text:
+                    features["piscine"] = True
+                elif "sécurité" in text or "gardien" in text or "concierge" in text:
+                    if "sécurité" not in features:
+                        features["sécurité"] = []
+                    if "gardien" in text or "concierge" in text:
+                        features["sécurité"].append("gardien")
+                    else:
+                        features["sécurité"].append(text)
+    except Exception as e:
+        print(f"[WARN] Erreur lors du parsing des features : {e}")
     return features
+
+def parse_ad_main_features(detail_page):
+    infos = {}
+    ad_main_features = detail_page.query_selector_all(".adMainFeature")
+    for feature in ad_main_features:
+        label_el = feature.query_selector(".adMainFeatureContentLabel")
+        value_el = feature.query_selector(".adMainFeatureContentValue")
+        if label_el and value_el:
+            label = label_el.inner_text().strip().lower()
+            value = value_el.inner_text().strip()
+            infos[label] = value
+    return infos
+
+def extract_card_images(card):
+    image_urls = set()
+
+    try:
+        print("[INFO] Extraction des images des cartes...")
+        
+        imgs = card.query_selector_all(".photoBox .slick-track .slick-slide img")
+        print(f"[INFO] Image trouvée : {len(imgs)}")
+
+        if len(imgs)> 0:
+            for img in imgs:
+                src = img.get_attribute("src")
+                data_lazy = img.get_attribute("data-lazy")
+                if src and src.strip():
+                    image_urls.add(src.strip())
+                elif data_lazy and data_lazy.strip():
+                    image_urls.add(data_lazy.strip())
+
+        print(f"[INFO] {len(image_urls)} image(s) extraites après nettoyage.")
+        return list(image_urls)
+
+
+    except Exception as e:
+        print(f"[WARN] Erreur lors de l'extraction des images : {e}")
+        return []
 
 def extract_annonce_data(context, card, page):
     try:
@@ -59,11 +99,16 @@ def extract_annonce_data(context, card, page):
         print(f"[INFO] Titre extrait : {title}")
         
         #Prix
+        
         price_el = card.query_selector("span.priceTag")
         if not price_el:
             return None
         price_raw = price_el.inner_text().strip()
-        price = int(re.sub(r"[^\d]", "", price_raw))
+        price_digits = re.sub(r"[^\d]", "", price_raw)
+        if not price_digits:
+            print(f"[WARN] Prix vide ou invalide : {price_raw}")
+            return None
+        price = int(price_digits)
         print(f"[INFO] Prix extrait : {price} MAD")
         if not price:
             return None
@@ -77,9 +122,14 @@ def extract_annonce_data(context, card, page):
         print(f"[INFO] Ville extraite : {city_name}")
         
         link = card.get_attribute("linkref") or title_el.get_attribute("href")
+        print(f"[INFO] Link OK")
         full_url = link if link.startswith("http") else f"https://www.mubawab.ma{link}"
-        source_id = re.findall(r"/a/(\d+)", full_url)
-        source_id = source_id[0] if source_id else ""
+        print(f"[INFO] full_url OK")
+        source_input = card.query_selector("input.adId")
+        print(f"[INFO] source_input OK")
+        source_id = source_input.get_attribute("value") if source_input else ""
+        print(f"[INFO] source_id OK")
+        print(f"[INFO] id source pour cette annonce est : {source_id}")
         
         #Surface, pièces, chambres, salles de bain
         surface = rooms = bedrooms = bathrooms = None
@@ -98,11 +148,6 @@ def extract_annonce_data(context, card, page):
                 bathrooms = int(re.search(r'\d+', text).group())
                 print(f"[INFO] Nombre de salles de bain extrait : {bathrooms}")
                 
-        
-        #images
-        img_tag = card.query_selector("img.sliderImage")
-        image_url = img_tag.get_attribute("src") if img_tag else None
-        
         #Téléphone
         phone_btn = card.query_selector(".contactPhoneClick")
         if not phone_btn:
@@ -126,14 +171,11 @@ def extract_annonce_data(context, card, page):
                 print("[INFO] Fermeture de la popup téléphone")
                 
                 try :
-                    close_popup.click()
-                    print("[OK] Click sur bouton de fermeture envoyé")
-                    page.wait_for_selector("#phonePopup", state="hidden", timeout=2000)
-                    page.wait_for_selector("#phonePopupOverlay", state="hidden", timeout=2000) 
-                    print("[OK] Popup téléphone fermée")
-                    
-                except Exception as e:
-                    print(f"[WARN] Erreur lors de la fermeture : {e}")
+                    # close_popup.click()
+                    # print("[OK] Click sur bouton de fermeture envoyé")
+                    # page.wait_for_selector("#phonePopup", state="hidden", timeout=2000)
+                    # page.wait_for_selector("#phonePopupOverlay", state="hidden", timeout=2000) 
+                    # print("[OK] Popup téléphone fermée")
                     print("[INFO] Forçage de la fermeture par JavaScript")
                     page.evaluate("""
                                 () => {
@@ -144,6 +186,10 @@ def extract_annonce_data(context, card, page):
                                 }
                             """)
                     print("[OK] Popup forcée à se fermer via JavaScript")
+                    
+                except Exception as e:
+                    print(f"[WARN] Erreur lors de la fermeture : {e}")
+                  
             else:
                 print("[INFO] Popup déjà fermée ou bouton introuvable")
         except Exception as e:
@@ -153,29 +199,63 @@ def extract_annonce_data(context, card, page):
             print(f"[WARN] Numéro invalide, annonce ignorée : {full_url}")
             return None
         
-        #Type de propriété et features supplémentaires
+        #Type de propriété, features supplémentaires et positionnement
         property_type = "appartement"
+        features_data = {}
+        latitude = longitude = None
+        description = ""
+        
         try:
             print(f"[INFO] Accès à la page de détails : {full_url}")
             detail_page = context.new_page()
             detail_page.goto(full_url, timeout=15000)
-            featured_block = detail_page.wait_for_selector(".adFeatures .adMainFeature ", timeout=5000)
-            features_container = detail_page.query_selector_all(".adFeatures")[1] 
             
-            if featured_block:
-                value_element = featured_block.query_selector(".adMainFeatureContentValue")
-                if value_element:
-                    property_type = value_element.inner_text().strip()
-                    print(f"[INFO] Type de propriété extrait : {property_type}")
+            infos_extraites = parse_ad_main_features(detail_page)
+            print(f"[INFO] Informations extraites : {infos_extraites}")
+            
+            extracted_type = str(infos_extraites.get("type de bien", "appartement")).strip().lower()
+            print(f"[INFO] Type de propriété extrait : {extracted_type}")
+            
+            ALLOWED_TYPES = ['appartement', 'maison', 'villa', 'studio', 'duplex', 'garage', 'terrain', 'local_commercial', 'bureau']
+            property_type = extracted_type if extracted_type in ALLOWED_TYPES else "appartement"
+            
+            floor = None
+            if property_type == "appartement" and "étage du bien" in infos_extraites : 
+                match = re.search (r"\d+", infos_extraites["étage du bien"])
+                if match:
+                    floor = int(match.group())
+                    print(f"[INFO] Étage extrait : {floor}")
+            
+            features_data = parse_detail_features(detail_page)
+            print(f"[INFO] Caractéristiques extraites supplément: {features_data}")
+            
+            if floor is not None:
+                features_data["étage"] = floor
+                print(f"[INFO] Étage ajouté aux caractéristiques : {floor}")
+                
+            map_el = detail_page.query_selector("#mapOpen")
+            if map_el:
+                lat_attr = map_el.get_attribute("lat")
+                lon_attr = map_el.get_attribute("lon")
+                if lat_attr and lon_attr:
+                    latitude = float(lat_attr)
+                    longitude = float(lon_attr)
+                    print(f"[INFO] Latitude et longitude extraites : {latitude}, {longitude}")
                 else:
-                    print("[WARN] Element .adMainFeature non trouvé, type de propriété par défaut utilisé")
+                    print("[WARN] Latitude ou longitude non trouvées dans l'élément de carte")
             else:
-                print("[WARN] Bloc de caractéristiques non trouvé, type de propriété par défaut utilisé")
+                print("[WARN] Élément de carte non trouvé dans la page de détails")
+            
+            # Récupération de la description
+            description_el = detail_page.query_selector(".blockProp")
+            description = description_el.inner_text().strip() if description_el else ""
+            print(f"[INFO] Élément de description trouvé : {description or 'Aucun'}")
             detail_page.close()
             print(f"[INFO] CONTENU EXTRAIT : {property_type}")
         except Exception as e:
             print(f"[WARN] Erreur lors de la récupération du type de propriété : {e}")
-            
+        print ("[INFO] Fin de l'extraction des données de l'annonce......................")    
+        # Construction de l'objet final    
         return {
             "title": title,
             "property_type": property_type,
@@ -187,23 +267,23 @@ def extract_annonce_data(context, card, page):
             "rooms_count": rooms,
             "bedrooms_count": bedrooms,
             "bathrooms_count": bathrooms,
-            "price": price,
-            "description": "",
-            "features": "",
-            "images_urls": [image_url] if image_url else [],
+            "price": float(price),
+            "description": description if description else "",
+            "features": features_data,
+            "images_urls": extract_card_images(card) if card else [],
             "publication_date": datetime.now().date().isoformat(),
             "source": "Mubawab",
             "source_id": source_id,
             "url_source": full_url,
             "contact_info": {
                 "name": "Mubawab",
-                "email": "",
+                "email": "hasnaa.ouchitachen@hightech.edu",
                 "phone": _phone
             },
             "is_available": True,
-            "is_featured": "feat" in card.get_attribute("class"),
-            "latitude": None,
-            "longitude": None
+            "is_featured": False,
+            "latitude": latitude,
+            "longitude": longitude
         }
 
     except Exception as e:
@@ -211,7 +291,6 @@ def extract_annonce_data(context, card, page):
         return None
 
 def run_scraper(since_date):
-    data_collected = []
     base_url = "https://www.mubawab.ma/fr/cc/immobilier-a-vendre-all"
 
     with sync_playwright() as p:
@@ -225,7 +304,7 @@ def run_scraper(since_date):
             try:
                 page.goto(url, timeout=60000)
                 page.wait_for_selector(".listingBox", timeout=10000)
-                time.sleep(3)  # crawl delay simulé
+                time.sleep(3) 
                 cards = page.query_selector_all(".listingBox")
                 print(f"[INFO] {len(cards)} annonces trouvées")
 
@@ -234,10 +313,12 @@ def run_scraper(since_date):
                     if data:
                         date_obj = datetime.fromisoformat(data["publication_date"]).date()
                         if date_obj >= since_date:
-                            data_collected.append(data)
+                            try:
+                                res = requests.post("http://127.0.0.1:8000/api/announcements/", json=data)
+                                print(f"✔ ({res.status_code}): {res.json()}")
+                            except Exception as e:
+                                print(f" Envoi échoué pour une annonce : {e}")
             except Exception as e:
-                print(f"[WARN] Page échouée : {e}")
+                print(f"[WARN] Échec d'envoi de la carte : {e}")
 
         browser.close()
-
-    return data_collected
