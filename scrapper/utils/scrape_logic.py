@@ -238,8 +238,8 @@ def extract_annonce_data(context, card, page):
                 lat_attr = map_el.get_attribute("lat")
                 lon_attr = map_el.get_attribute("lon")
                 if lat_attr and lon_attr:
-                    latitude = float(lat_attr)
-                    longitude = float(lon_attr)
+                    latitude = round(float(lat_attr), 8)
+                    longitude = round(float(lon_attr), 8)
                     print(f"[INFO] Latitude et longitude extraites : {latitude}, {longitude}")
                 else:
                     print("[WARN] Latitude ou longitude non trouvées dans l'élément de carte")
